@@ -1,0 +1,99 @@
+/*
+ * File: ir_capturer_app.c
+ * Description: Flipper Zero app to detect and save all infrared signals.
+ * Location: /apps_plugins/ir_capturer/
+ */
+
+#include <furi.h>
+#include <furi_hal.h>
+#include <gui/gui.h>
+#include <infrared/infrared.h>
+#include <infrared/infrared_worker.h>
+#include <storage/storage.h>
+#include <input/input.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define IR_MAX_SIGNAL_SIZE 1024
+
+typedef struct {
+    Gui* gui;
+    ViewPort* viewport;
+    InfraredWorker* ir_worker;
+    InfraredSignal* signal;
+    bool capturing;
+    bool saved;
+} IRCapturerApp;
+
+static void render_callback(Canvas* canvas, void* ctx) {
+    IRCapturerApp* app = ctx;
+    canvas_clear(canvas);
+    canvas_set_font(canvas, FontPrimary);
+    canvas_draw_str(canvas, 2, 12, "IR Recorder");
+
+    if(app->capturing) {
+        canvas_draw_str(canvas, 2, 30, "Waiting for IR signal...");
+    } else if(app->saved) {
+        canvas_draw_str(canvas, 2, 30, "Signal saved!");
+    } else if(app->signal) {
+        canvas_draw_str(canvas, 2, 30, "Signal captured");
+    } else {
+        canvas_draw_str(canvas, 2, 30, "Press OK to capture");
+    }
+}
+
+static void input_callback(InputEvent* event, void* ctx) {
+    IRCapturerApp* app = ctx;
+
+    if(event->type == InputTypeShort) {
+        if(event->key == InputKeyOk) {
+            app->capturing = true;
+            infrared_worker_rx(app->ir_worker, app->signal, IR_MAX_SIGNAL_SIZE);
+            app->capturing = false;
+        }
+        else if(event->key == InputKeyRight && app->signal) {
+            // Save IR signal
+            Storage* storage = furi_record_open("storage");
+            File* file = storage_file_alloc(storage);
+            storage_file_open(file, "/any/ir_saved.ir", FSAM_WRITE, FSOM_CREATE_ALWAYS);
+            infrared_signal_save(file, app->signal);
+            storage_file_close(file);
+            storage_file_free(file);
+            furi_record_close("storage");
+            app->saved = true;
+        }
+        else if(event->key == InputKeyBack) {
+            app->capturing = false;
+            app->saved = false;
+            gui_remove_viewport(app->gui, app->viewport);
+        }
+    }
+}
+
+int32_t ir_capturer_app(void* p) {
+    UNUSED(p);
+
+    IRCapturerApp app = {
+        .gui = furi_record_open("gui"),
+        .viewport = view_port_alloc(),
+        .ir_worker = infrared_worker_alloc(),
+        .signal = infrared_signal_alloc(),
+        .capturing = false,
+        .saved = false
+    };
+
+    view_port_draw_callback_set(app.viewport, render_callback, &app);
+    view_port_input_callback_set(app.viewport, input_callback, &app);
+    gui_add_view_port(app.gui, app.viewport, GuiLayerFullscreen);
+
+    while(app.viewport->parent) {
+        furi_delay_ms(50);
+    }
+
+    infrared_worker_free(app.ir_worker);
+    infrared_signal_free(app.signal);
+    view_port_free(app.viewport);
+    furi_record_close("gui");
+
+    return 0;
+}
